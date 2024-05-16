@@ -111,63 +111,66 @@ def collecte(row):
 # Etape d'uniformisation
 def make_op_uniform(op):
     print("Opérateur : " + op['name'])
-    df = get_raw_dataframe(op)
-    print("Sites HS : " + str(len(df.index)))
-    
-    # Renommage et conversion des colonnes
-    df.rename(columns=op['structure'], inplace=True)
-    if 'lat' not in df or 'long' not in df:
-        coords_conversion(df)
-    
-    # Création du dataframe uniformisé qui sera rempli colonne par colonne
-    nf = pd.DataFrame(columns=all_columns)
-    
-    for field in detail_duree_columns:
-        nf[field] = df[field].fillna('').astype(str).apply(lambda r: reformat(op,field,r)) if field in df else np.nan
-    
-    if 'debut' not in df and 'debut_data' in df and 'debut_voix' in df:
-        nf['debut'] = nf.apply(lambda s: min([e for e in [s['debut_data'],s['debut_voix']] if e] or ['']), axis=1)
-    if 'fin' not in df and 'fin_data' in df and 'fin_voix' in df:
-        nf['fin'] = nf.apply(lambda s: max([e for e in [s['fin_data'],s['fin_voix']] if e] or ['']), axis=1)
-    
-    if 'voix' not in df:
-        df['voix'] = df.apply(lambda s: collecte([s['voix2g'],s['voix3g'],s['voix4g']]), axis=1)
-    if 'data' not in df:
-        df['data'] = df.apply(lambda s: collecte([s['data3g'],s['data4g'],s['data5g']]), axis=1)
-    
-    # Formatage du code postal et code INSEE
-    if 'code_insee' in df:
-        df['code_insee'] = [ re.findall('([0-9]?[0-9AB][0-9][0-9][0-9]).*', d)[0] for d in df['code_insee'].astype(str) ]
-        nf['code_insee'] = df['code_insee'].astype(str).str.zfill(5)
-        if 'departement' not in df:
-            nf['departement'] = nf['code_insee'].str[0:2]
-    if 'code_postal' in df:
-        nf['code_postal'] = df['code_postal'].astype(int)
-        if 'departement' not in df:
-            nf['departement'] = nf['code_postal'].astype(str).str.zfill(5).str[0:2]
-    
-    # Extraction du code département via le code postal ou le code insee
-    if 'departement' in df:
-        if df['departement'].dtypes == 'int64':
-            df = df.astype({'departement': str})
-        nf['departement'] = [ re.findall('([0-9][0-9AB]?).*', d)[0] for d in df['departement'] ]
-    
-    for col in equipment_columns + ['lat','long','commune']:
-        nf[col] = df.get(col)
-    
-    # Fill with constant columns
-    nf['date']     = datename
-    nf['op_code']  = op['code']
-    nf['operateur']= op['name']
-    
-    # Tri des données
-    nf = nf.sort_values(by=['departement', 'code_insee', 'code_postal'])
-    # Sauvegarde dans le dict de l'opérateur
-    op['dataframe'] = nf
-    # Ecriture du fichier au format standardisé csv (Un format unique pour les gouverner tous !)
-    nf.to_csv(save.op_path(op,'.csv'), sep=',', index=False)
-    # Export en JSON (bon ok, deux...)
-    nf.to_json(save.op_path(op,'.json'), orient='records')
+    try:
+        df = get_raw_dataframe(op)
+        print("Sites HS : " + str(len(df.index)))
+
+        # Renommage et conversion des colonnes
+        df.rename(columns=op['structure'], inplace=True)
+        if 'lat' not in df or 'long' not in df:
+            coords_conversion(df)
+        
+        # Création du dataframe uniformisé
+        nf = pd.DataFrame(columns=all_columns)
+
+        for field in detail_duree_columns:
+            if field in df:
+                nf[field] = df[field].fillna('').astype(str).apply(lambda r: reformat(op,field,r))
+            else:
+                nf[field] = np.nan
+        
+        # Gestion des colonnes de date
+        try:
+            if 'debut' not in df and 'debut_data' in df and 'debut_voix' in df:
+                nf['debut'] = nf.apply(lambda s: min([e for e in [s['debut_data'],s['debut_voix']] if e] or ['']), axis=1)
+            if 'fin' not in df and 'fin_data' in df and 'fin_voix' in df:
+                nf['fin'] = nf.apply(lambda s: max([e for e in [s['fin_data'],s['fin_voix']] if e] or ['']), axis=1)
+        except Exception as e:
+            print(f"Erreur lors du traitement des colonnes de date pour {op['name']}: {e}")
+
+        # Remplissage des catégories de données manquantes
+        if 'voix' not in df:
+            df['voix'] = df.apply(lambda s: collecte([s['voix2g'],s['voix3g'],s['voix4g']]), axis=1)
+        if 'data' not in df:
+            df['data'] = df.apply(lambda s: collecte([s['data3g'],s['data4g'],s['data5g']]), axis=1)
+        
+        # Formatage des codes postaux et codes INSEE
+        try:
+            if 'code_insee' in df:
+                df['code_insee'] = [ re.findall('([0-9]?[0-9AB][0-9][0-9][0-9]).*', d)[0] for d in df['code_insee'].astype(str) ]
+                nf['code_insee'] = df['code_insee'].astype(str).str.zfill(5)
+                if 'departement' not in df:
+                    nf['departement'] = nf['code_insee'].str[0:2]
+            if 'code_postal' in df:
+                nf['code_postal'] = df['code_postal'].astype(int)
+                if 'departement' not in df:
+                    nf['departement'] = nf['code_postal'].astype(str).str.zfill(5).str[0:2]
+        except Exception as e:
+            print(f"Erreur lors du traitement des codes postaux ou INSEE pour {op['name']}: {e}")
+        
+        for col in equipment_columns + ['lat', 'long', 'commune']:
+            nf[col] = df.get(col)
+        
+        nf['date'] = datename
+        nf['op_code'] = op['code']
+        nf['operateur'] = op['name']
+        
+        nf = nf.sort_values(by=['departement', 'code_insee', 'code_postal'])
+        op['dataframe'] = nf
+        nf.to_csv(save.op_path(op, '.csv'), sep=',', index=False)
+        nf.to_json(save.op_path(op, '.json'), orient='records')
+    except Exception as e:
+        print(f"Échec dans make_op_uniform pour {op['name']}: {e}")
 
 # Uniformisation des chacun des fichiers opérateurs
 for op in operateurs:
