@@ -90,98 +90,68 @@ def get_raw_dataframe(op):
 
 # Calcul des champs lat/long à partir des x/y en Lambert93
 def coords_conversion(df):
-    try:
-        # Reprojection en WGS84 des coordonées projetées
-        pt = gpd.GeoDataFrame(geometry=gpd.points_from_xy(df['x'], df['y']))
-        pt.crs = {'init': "epsg:2154"}
-        pts = pt.to_crs({'init': "epsg:4326"})
-        df['lat'] = pts.geometry.y
-        df['long'] = pts.geometry.x
-    except Exception as e:
-        print(f"Erreur lors de la conversion des coordonnées : {e}")
+    # Vérifiez d'abord si 'x' et 'y' existent dans le dataframe, sinon utilisez 'lat' et 'long'
+    if 'x' in df and 'y' in df:
+        try:
+            pt = gpd.GeoDataFrame(geometry=gpd.points_from_xy(df['x'], df['y']))
+            pt.crs = {'init': "epsg:2154"}
+            pts = pt.to_crs({'init': "epsg:4326"})
+            df['lat'] = pts.geometry.y
+            df['long'] = pts.geometry.x
+        except Exception as e:
+            print(f"Erreur lors de la conversion des coordonnées : {e}")
+    else:
+        print("Les colonnes 'x' et 'y' sont absentes, saut de la conversion des coordonnées.")
 
-# Reformattage d'un champ
-def reformat(op, field, value):
-    try:
-        # Si aucune reformattage n'est prévu, retourner value inchangée
-        if 'reformatting' not in op or field not in op['reformatting'] or value == '':
-            return value
-        remap = op['reformatting'][field]  # On récupère le reformattage de ce champ
-        # On filtre avec re.match et on utilise format pour print dans le nouveau format
-        return remap['format'].format(*re.match(remap['match'], value).groups())
-    except Exception as e:
-        print(f"Erreur lors du reformattage pour {field} de {op['name']}: {e}")
-        return value  # Retourne la valeur initiale en cas d'erreur
-
-def collecte(row):
-    return 'HS' if 'HS' in row else 'OK' if 'OK' in row else None
-
-# Étape d'uniformisation
 def make_op_uniform(op):
     print("Opérateur : " + op['name'])
+    df = get_raw_dataframe(op)
+    if df.empty:
+        print(f"Aucune donnée à traiter pour {op['name']}.")
+        return
+    print("Sites HS : " + str(len(df.index)))
+
+    # Renommage et conversion des colonnes
+    df.rename(columns=op['structure'], inplace=True)
+    # Vérifiez si les données ont besoin de conversion de coordonnées
+    if 'lat' not in df or 'long' not in df:
+        coords_conversion(df)
+    
+    # Création du dataframe uniformisé
+    nf = pd.DataFrame(columns=all_columns)
+
+    for field in detail_duree_columns:
+        nf[field] = df[field].fillna('').astype(str).apply(lambda r: reformat(op, field, r)) if field in df else np.nan
+
+    if 'voix' not in df:
+        df['voix'] = df.apply(lambda s: collecte([s.get('voix2g', ''), s.get('voix3g', ''), s.get('voix4g', '')]), axis=1)
+    if 'data' not in df:
+        df['data'] = df.apply(lambda s: collecte([s.get('data3g', ''), s.get('data4g', ''), s.get('data5g', '')]), axis=1)
+
+    # Formatage des codes postaux et codes INSEE
     try:
-        df = get_raw_dataframe(op)
-        if df.empty:
-            print(f"Le dataframe pour {op['name']} est vide, impossible de continuer.")
-            return
-        print("Sites HS : " + str(len(df.index)))
+        if 'code_insee' in df:
+            df['code_insee'] = [re.findall('([0-9]?[0-9AB][0-9][0-9][0-9]).*', d)[0] if re.findall('([0-9]?[0-9AB][0-9][0-9][0-9]).*', d) else '' for d in df['code_insee'].astype(str)]
+            nf['code_insee'] = df['code_insee'].astype(str).str.zfill(5)
+        if 'code_postal' in df:
+            nf['code_postal'] = df['code_postal'].astype(int)
+    except Exception as e:
+        print(f"Erreur lors du traitement des codes postaux ou INSEE pour {op['name']}: {e}")
 
-        # Renommage et conversion des colonnes
-        df.rename(columns=op['structure'], inplace=True)
-        if 'lat' not in df or 'long' not in df:
-            coords_conversion(df)
-        
-        # Création du dataframe uniformisé
-        nf = pd.DataFrame(columns=all_columns)
+    for col in equipment_columns + ['lat', 'long', 'commune']:
+        nf[col] = df.get(col, pd.Series(index=df.index, dtype=str))
 
-        for field in detail_duree_columns:
-            if field in df:
-                nf[field] = df[field].fillna('').astype(str).apply(lambda r: reformat(op, field, r))
-            else:
-                nf[field] = np.nan
-        
-        # Gestion des colonnes de date
-        try:
-            if 'debut' not in df and 'debut_data' in df and 'debut_voix' in df:
-                nf['debut'] = nf.apply(lambda s: min([e for e in [s['debut_data'], s['debut_voix']] if e] or ['']), axis=1)
-            if 'fin' not in df and 'fin_data' in df and 'fin_voix' in df:
-                nf['fin'] = nf.apply(lambda s: max([e for e in [s['fin_data'], s['fin_voix']] if e] or ['']), axis=1)
-        except Exception as e:
-            print(f"Erreur lors du traitement des colonnes de date pour {op['name']}: {e}")
-
-        # Remplissage des catégories de données manquantes
-        if 'voix' not in df:
-            df['voix'] = df.apply(lambda s: collecte([s['voix2g'], s['voix3g'], s['voix4g']]), axis=1)
-        if 'data' not in df:
-            df['data'] = df.apply(lambda s: collecte([s['data3g'], s['data4g'], s['data5g']]), axis=1)
-        
-        # Formatage des codes postaux et codes INSEE
-        try:
-            if 'code_insee' in df:
-                df['code_insee'] = [re.findall('([0-9]?[0-9AB][0-9][0-9][0-9]).*', d)[0] for d in df['code_insee'].astype(str)]
-                nf['code_insee'] = df['code_insee'].astype(str).str.zfill(5)
-                if 'departement' not in df:
-                    nf['departement'] = nf['code_insee'].str[0:2]
-            if 'code_postal' in df:
-                nf['code_postal'] = df['code_postal'].astype(int)
-                if 'departement' not in df:
-                    nf['departement'] = nf['code_postal'].astype(str).str.zfill(5).str[0:2]
-        except Exception as e:
-            print(f"Erreur lors du traitement des codes postaux ou INSEE pour {op['name']}: {e}")
-        
-        for col in equipment_columns + ['lat', 'long', 'commune']:
-            nf[col] = df.get(col)
-        
-        nf['date'] = datename
-        nf['op_code'] = op['code']
-        nf['operateur'] = op['name']
-        
-        nf = nf.sort_values(by=['departement', 'code_insee', 'code_postal'])
-        op['dataframe'] = nf
+    nf['date'] = datename
+    nf['op_code'] = op['code']
+    nf['operateur'] = op['name']
+    
+    nf = nf.sort_values(by=['departement', 'code_insee', 'code_postal'])
+    op['dataframe'] = nf
+    try:
         nf.to_csv(save.op_path(op, '.csv'), sep=',', index=False)
         nf.to_json(save.op_path(op, '.json'), orient='records')
     except Exception as e:
-        print(f"Échec dans make_op_uniform pour {op['name']}: {e}")
+        print(f"Échec de l'enregistrement pour {op['name']}: {e}")
 
 # Uniformisation des chacun des fichiers opérateurs
 for op in operateurs:
